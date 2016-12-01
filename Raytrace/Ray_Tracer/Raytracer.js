@@ -53,14 +53,18 @@ Ball.prototype.intersect = function( ray, existing_intersection, minimum_dist )
   var is = this.inverseScaling;
   var isInside = 0;
 
+  //taking the inverse of the ray
   var c = mult_vec(is , ray.dir);
   i = parseFloat(this.position[0]);
   o = parseFloat(this.position[1]);
   p = parseFloat(this.position[2]);
   //solves unit sphere problem. You can't actually use the slide's equation without inverse transforming the ray first
+  //this line took me forever. Instead of just inverse transforming the origin
+  //we are inverse transofmring the displacement between the sphere origin and the ray origin
+  //this will help us if the origin of the sphere is not at 0,0,0
   var S = mult_vec(is , subtract(vec4(i,o,p,1), ray.origin));
   
-
+  //setup for quadratic equation
   var a1 = dot(c,c);
   var b1 = dot (S,c);
   //avoids the extra + 1 from doing vec4
@@ -114,26 +118,33 @@ Ball.prototype.intersect = function( ray, existing_intersection, minimum_dist )
   //only adjust if it is far enough
   if(farEnough == 1){
     //adjust if t is close than what we already have or it is the first one
-    if(t < existing_intersection.distance || existing_intersection.distance == -1){
+    if(t < existing_intersection.distance || existing_intersection.distance == Number.POSITIVE_INFINITY){
+        // existing_intersection.foundBall = 1;
         existing_intersection.distance = t;
         existing_intersection.ball = this;
     }
   }
 
   //if we have a solution
-  if(existing_intersection.distance != -1){
+  if(existing_intersection.distance != Number.POSITIVE_INFINITY){
     var bPointer = existing_intersection.ball;
     //intersection point. S+ct
     var intersect_point = add(ray.origin, scale_vec(existing_intersection.distance, ray.dir));
 
     //need a normal
     var normal = vec4();
+    //position of the sphere that we found hda the nearest intersection
     temp = vec4( bPointer.position[0], bPointer.position[1], bPointer.position[2], 1);
     normal = subtract(intersect_point, temp);
+
+    //we want to flip the normal if inside
     if(isInside == 1)
       normal = scale_vec(-1, normal);
 
-    //Piazza post about how to do transpose inverse
+    //Piazza post about how to do transpose inverse of normal
+    //because the "sphere" maybe be transformed, that would be fine but the normals will be too
+    //in order to have the normals not "lean" torwards each other we have to straighten them out with 
+    //transpose inverse 
     var trans = mat4();
     trans = transpose(existing_intersection.ball.inverseScaling);
     normal = mult_vec(trans,mult_vec(existing_intersection.ball.inverseScaling,normal));
@@ -255,23 +266,76 @@ Raytracer.prototype.trace = function( ray, color_remaining, shadow_test_light_so
   //        instead just store color_remaining, the pixel's remaining potential to be lit up more... proceeding only if that's still significant.  
   //        If a light source for shadow testing is provided as the optional final argument, this function's objective simplifies to just 
   //        checking the path directly to a light source for obstructions.
-  var intersection  = { distance:-1, ball: this.balls[0], normal: vec4()};
+  
+
+  //if the shadow_test_light_source is not undefined
+
+  var closest_intersection  = 
+  { distance: Number.POSITIVE_INFINITY, ball: this.balls[0], normal: vec4()};
   var i;
   
   for(i = 0; i < this.balls.length; i++){
-    intersection = this.balls[i].intersect(ray, intersection);
+    closest_intersection = this.balls[i].intersect(ray, closest_intersection);
   }
-  if(intersection.distance == -1)
-    return vec4();
-  else if (intersection.distance > 0)
-    return Color(0.5,0.5,0.5,1);
+  //didn't find ball
+  if(closest_intersection.distance == Number.POSITIVE_INFINITY){
+   return mult_3_coeffs( this.ambient, background_functions[ curr_background_function ] ( ray ) ).concat(1); 
+  //return background_color;
+  }
   
-  if( length( color_remaining ) < .3 )    return Color( 0, 0, 0, 1 );  // Is there any remaining potential for brightening this pixel even more?
+  var final_color = vec4();
+  //ambient
+  ambient2 = vec3();
+  ambient2 = scale_vec(closest_intersection.ball.k_a , this.ambient);
 
-  var closest_intersection = { distance: Number.POSITIVE_INFINITY }    // An empty intersection object
+  //diffuse and specular
+  var diffuse = vec3();
+  var specular = vec3();
+  var intersect_point = add(ray.origin, scale_vec(closest_intersection.distance, ray.dir)); //vec4
+
+  //for every single light
+  for( var j = 0; j < this.anim.graphicsState.lights.length; j++){
+    var l = this.anim.graphicsState.lights[j];
+    var lightRay = { origin: intersect_point, dir: normalize(subtract(l.position, 
+      intersect_point))
+    };
+    var light_intersection  = 
+    { distance: Number.POSITIVE_INFINITY, ball: this.balls[0], normal: vec4()};
+    for(k = 0; k < this.balls.length; k++){
+      light_intersection = this.balls[k].intersect(lightRay, light_intersection);
+    }
+    if(light_intersection.distance == Number.POSITIVE_INFINITY){
+      var diffusionIntensity = dot(closest_intersection.normal, lightRay.dir);
+      if(diffusionIntensity > 0 ){
+        diffuse = add(diffuse, mult_3_coeffs(scale_vec(diffusionIntensity, l.color),
+          closest_intersection.ball.color));
+
+        var h = normalize(subtract(lightRay.dir, ray.dir));
+
+        var specularIntensity = dot(closest_intersection.normal,h);
+        specular = add(specular,scale_vec(Math.pow(Math.pow(specularIntensity, closest_intersection.ball.n),3),
+         vec3(l.color[0],l.color[1],l.color[2])));
+      }
+    }
+  }
+
+  //don't forget ambient in color
+  final_color = mult_3_coeffs(closest_intersection.ball.color, ambient2);
+  final_color = add(final_color,scale_vec(closest_intersection.ball.k_d,diffuse));
+  final_color = add(final_color,scale_vec(closest_intersection.ball.k_s, specular));
+
+  var ffinal_color = vec4(final_color[0],final_color[1],final_color[2],1);
+  //final_color = final_color + ...
+
+  return ffinal_color;
+
+  //if( length( color_remaining ) < .3 )    return Color( 0, 0, 0, 1 );  // Is there any remaining potential for brightening this pixel even more?
+
+  // var closest_intersection = { distance: Number.POSITIVE_INFINITY }    // An empty intersection object
   
-  if( !closest_intersection.ball )
-    return mult_3_coeffs( this.ambient, background_functions[ curr_background_function ] ( ray ) ).concat(1);     
+  // if( closest_intersection.foundBall == 0 )
+  //   return mult_3_coeffs( this.ambient, background_functions[ curr_background_function ] ( ray ) ).concat(1);     
+    // }
 }
 
 Raytracer.prototype.parseLine = function( tokens )            // Load the text lines into variables
