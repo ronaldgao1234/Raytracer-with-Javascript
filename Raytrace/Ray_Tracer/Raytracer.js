@@ -43,7 +43,7 @@ Ball.prototype.construct = function()
 }
 
 //goodbye thanksgiving break
-Ball.prototype.intersect = function( ray, existing_intersection, minimum_dist )
+Ball.prototype.intersect = function( ray, existing_intersection, maximum_dist )
 {
   // TODO:  Given a ray, check if this Ball is in its path.  Recieves as an argument a record of the nearest intersection found 
   //        so far, updates it if needed and returns it.  Only counts intersections that are at least a given distance ahead along the ray.
@@ -79,11 +79,10 @@ Ball.prototype.intersect = function( ray, existing_intersection, minimum_dist )
   //if the solution is greater than 0.0001
   var farEnough = 0;
 
-  //0 t -> do nothing since we don't have a solution
   if(discrim == 0){
     //one t. division more costly than multiply. should be b/2a but we mixed up the formula
     t = (1/a1) * b1;
-    if(t > 0.00001)
+    if(t > 0.001)
       farEnough = 1;
   }else if (discrim > 0 ){
     //two t solutions if not 1. if 0 just do nothing
@@ -97,8 +96,13 @@ Ball.prototype.intersect = function( ray, existing_intersection, minimum_dist )
     else
       t = t2;
 
+    //for shadow ray
+    if(maximum_dist){
+      if((t1 >= 0.001 && t2 <= 1 )||(t2 >= 0.001 && t1 <= 1))
+        farEnough = 1;
+    }
     //if the solutions is literally too small you want to take the other solution
-    if(t <= 0.00001){ //not far enough
+    if(t <= 0.001){ //not far enough
       
       //the sphere is cut by the near plane 
       isInside = 1;
@@ -108,6 +112,7 @@ Ball.prototype.intersect = function( ray, existing_intersection, minimum_dist )
         t = t2;
       else
         t = t1;
+      //leave farEnough as 0
     }
     else{
       //is far enough
@@ -137,9 +142,12 @@ Ball.prototype.intersect = function( ray, existing_intersection, minimum_dist )
     temp = vec4( bPointer.position[0], bPointer.position[1], bPointer.position[2], 1);
     normal = subtract(intersect_point, temp);
 
-    //we want to flip the normal if inside
-    if(isInside == 1)
+    //we want to flip the normal if inside. VERY IMPORTANT FOR REFLECTION AND REFRACTION. TOOK ME SO LONG TO FIGURE OUT
+    //THIS ONE CONDITION
+    if(isInside == 1){
       normal = scale_vec(-1, normal);
+      this.refract_index = 1/this.refract_index;
+    }
 
     //Piazza post about how to do transpose inverse of normal
     //because the "sphere" maybe be transformed, that would be fine but the normals will be too
@@ -268,55 +276,95 @@ Raytracer.prototype.trace = function( ray, color_remaining, shadow_test_light_so
   //        checking the path directly to a light source for obstructions.
   
 
-  //if the shadow_test_light_source is not undefined
+  if( length ( color_remaining) < .3) return Color (0, 0, 0, 1);
 
   var closest_intersection  = 
   { distance: Number.POSITIVE_INFINITY, ball: this.balls[0], normal: vec4()};
   var i;
   
+  //go thru all balls to find closest one
   for(i = 0; i < this.balls.length; i++){
     closest_intersection = this.balls[i].intersect(ray, closest_intersection);
   }
+
   //didn't find ball
   if(closest_intersection.distance == Number.POSITIVE_INFINITY){
    return mult_3_coeffs( this.ambient, background_functions[ curr_background_function ] ( ray ) ).concat(1); 
   //return background_color;
   }
   
-  var final_color = vec4();
-  //ambient
+  //trying to get the color from that intersection
+  var final_color = vec3();
+  
+  //ambient-----------------------------------------------------------------------------------------------------
   ambient2 = vec3();
   ambient2 = scale_vec(closest_intersection.ball.k_a , this.ambient);
 
   //diffuse and specular
-  var diffuse = vec3();
-  var specular = vec3();
+  //Lambert's law: Resulting intensity = light source intensity *diffuse coefficient *(normal * light_source vector)
+  //specular: light source intensity *specular coefficient*(ray reflected * ray towards viewer)^n
+  //implement phong illumination model with this^
+  //don't forget to normalize all the vectors n,L,r,v
+
+  //diffuse-----------------------------------------------------------------------------------------------------
+  var diffuse = vec3(); var specular = vec3();
+
+  //intersection point
   var intersect_point = add(ray.origin, scale_vec(closest_intersection.distance, ray.dir)); //vec4
 
+  //for n in the Lambert's formula
+  var n = closest_intersection.normal;
   //for every single light
   for( var j = 0; j < this.anim.graphicsState.lights.length; j++){
-    var l = this.anim.graphicsState.lights[j];
-    var lightRay = { origin: intersect_point, dir: normalize(subtract(l.position, 
+
+    //for diffuse find the ray that points towards the Light! 
+    var l = { origin: intersect_point, dir: normalize(subtract(this.anim.graphicsState.lights[j].position, 
       intersect_point))
     };
-    var light_intersection  = 
+
+    //dot n*l direction = diffusion intensity
+    var dtemp = Math.max(0, dot(n, l.dir));
+
+    //test if anything blocks l or the ray that goes to the light source
+    var test_intersection  = 
     { distance: Number.POSITIVE_INFINITY, ball: this.balls[0], normal: vec4()};
     for(k = 0; k < this.balls.length; k++){
-      light_intersection = this.balls[k].intersect(lightRay, light_intersection);
+      test_intersection = this.balls[k].intersect(l, test_intersection, 1);
     }
-    if(light_intersection.distance == Number.POSITIVE_INFINITY){
-      var diffusionIntensity = dot(closest_intersection.normal, lightRay.dir);
-      if(diffusionIntensity > 0 ){
-        diffuse = add(diffuse, mult_3_coeffs(scale_vec(diffusionIntensity, l.color),
-          closest_intersection.ball.color));
 
-        var h = normalize(subtract(lightRay.dir, ray.dir));
-
-        var specularIntensity = dot(closest_intersection.normal,h);
-        specular = add(specular,scale_vec(Math.pow(Math.pow(specularIntensity, closest_intersection.ball.n),3),
-         vec3(l.color[0],l.color[1],l.color[2])));
-      }
+    //there must be something blocking our way. the second part is unncessary but i just put it there cuz i can't fix a bug
+    //u don't want anything in your way
+    if(test_intersection.distance != Number.POSITIVE_INFINITY){
+      continue;
     }
+
+    //temporary variable storing current light
+    var current_light = this.anim.graphicsState.lights[j];
+
+    //could be possible. the angle between normal and light ray is 90 degrees and above. that would mean 0 contribution
+    // if(diffusionIntensity <= 0 ){
+    //   continue;
+    // }
+    var dIntensity= mult_3_coeffs(scale_vec(dtemp, current_light.color), closest_intersection.ball.color);
+
+    diffuse = add(diffuse, dIntensity);
+
+
+    //specular----------------------------------------------------------------------------------------
+    //bisector between the ray from light source and the ray direction we are at now
+    var h = normalize(subtract(l.dir, ray.dir));
+
+    //scalar
+    var stemp = Math.max(0, dot(h,closest_intersection.normal));
+
+    //power to shininess exponent
+    stemp = Math.pow(stemp, closest_intersection.ball.n);
+
+    //thank you cornell. god bless
+    var sIntensity = scale_vec(Math.pow(stemp,3),
+     vec3(current_light.color[0],current_light.color[1],current_light.color[2]))
+
+    specular = add(specular, sIntensity);
   }
 
   //don't forget ambient in color
@@ -324,18 +372,50 @@ Raytracer.prototype.trace = function( ray, color_remaining, shadow_test_light_so
   final_color = add(final_color,scale_vec(closest_intersection.ball.k_d,diffuse));
   final_color = add(final_color,scale_vec(closest_intersection.ball.k_s, specular));
 
-  var ffinal_color = vec4(final_color[0],final_color[1],final_color[2],1);
+  //var ffinal_color = vec4(final_color[0],final_color[1],final_color[2],1);
   //final_color = final_color + ...
 
-  return ffinal_color;
+  //reflection and refraction-------------------------------------------------------------------------------------------
+  //n = closest_intersection.normal, r is reflection, r2 is refraction
+  var rtemp = dot( ray.dir, n);
+  rtemp = scale_vec(2,scale_vec(rtemp, n));
+  var rdirection = normalize(subtract(ray.dir, rtemp));
+  var r = { origin: intersect_point, dir: rdirection };
 
-  //if( length( color_remaining ) < .3 )    return Color( 0, 0, 0, 1 );  // Is there any remaining potential for brightening this pixel even more?
+  //you gave us this line on piazza
+  color_remaining = scale_vec( closest_intersection.ball.k_r, mult_3_coeffs( color_remaining, subtract( vec3( 1, 1, 1 ), final_color ) ) );
 
-  // var closest_intersection = { distance: Number.POSITIVE_INFINITY }    // An empty intersection object
+  //reflection intersection!
+  var rintersect = this.trace(r, color_remaining);
+  //console.log(f,vec4(final_color[0],final_color[1],final_color[2],0), scale_vec(closest_intersection.ball.k_r, rintersect));
+  final_color = add(vec4(final_color[0],final_color[1],final_color[2],0), scale_vec(closest_intersection.ball.k_r, rintersect));
+
+  //refraction---------------------------------------------------------------------------
+  var refract_direction_Vector = vec4();
+  // if(closest_intersection.ball.k_refract <= 0){}
+  //   else{
+
+  // Week_7_Fall_16 has blessed me a formula unlike any other for refraction!
+  var reIndex = closest_intersection.ball.refract_index;
+  var ctemp = dot(scale_vec(-1,n),ray.dir);  //<-not sure about this line
+
+  var a1 = scale_vec(reIndex,ray.dir);
+  var a2 = (reIndex*ctemp) - Math.sqrt(1 - Math.pow(reIndex,2)*(1-Math.pow(ctemp,2)));
+
+  refract_direction_Vector = add(a1,scale_vec(a2,n));
+
+  //lower the color_remaing due to refraction
+  color_remaining = [1,1,1];
+  color_remaining = scale_vec( closest_intersection.ball.k_refract, mult_3_coeffs( color_remaining, subtract( vec3( 1, 1, 1 ), 
+    vec3(final_color[0],final_color[1],final_color[2]) ) ));
+
+  var r2 = { origin: intersect_point, dir: refract_direction_Vector };
+
+  //refraction intersection!
+  var refractIntersect = this.trace(r2, color_remaining);
+  final_color = add(vec4(final_color[0],final_color[1],final_color[2],0), scale_vec(closest_intersection.ball.k_refract, refractIntersect));
   
-  // if( closest_intersection.foundBall == 0 )
-  //   return mult_3_coeffs( this.ambient, background_functions[ curr_background_function ] ( ray ) ).concat(1);     
-    // }
+  return final_color;
 }
 
 Raytracer.prototype.parseLine = function( tokens )            // Load the text lines into variables
