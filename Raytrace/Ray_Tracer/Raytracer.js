@@ -97,21 +97,23 @@ Ball.prototype.intersect = function( ray, existing_intersection, maximum_dist )
       t = t2;
 
     //for shadow ray
-    if(maximum_dist){
-      if((t1 >= 0.001 && t2 <= 1 )||(t2 >= 0.001 && t1 <= 1))
-        farEnough = 1;
-    }
+    // if(maximum_dist){
+    //   if((t1 >= 0.001 && t2 <= 1 )||(t2 >= 0.001 && t1 <= 1))
+    //     farEnough = 1;
+    // }
     //if the solutions is literally too small you want to take the other solution
     if(t <= 0.001){ //not far enough
       
       //the sphere is cut by the near plane 
       isInside = 1;
-
+      
       //take the other solution
-      if(t == t1)
-        t = t2;
-      else
-        t = t1;
+        if(t == t1)
+          t = t2;
+        else
+          t = t1;
+      if (t <= .001)
+        farEnough = 0;
       //leave farEnough as 0
     }
     else{
@@ -119,7 +121,6 @@ Ball.prototype.intersect = function( ray, existing_intersection, maximum_dist )
       farEnough = 1;
     }
   }
-
   //only adjust if it is far enough
   if(farEnough == 1){
     //adjust if t is close than what we already have or it is the first one
@@ -329,10 +330,10 @@ Raytracer.prototype.trace = function( ray, color_remaining, shadow_test_light_so
     var test_intersection  = 
     { distance: Number.POSITIVE_INFINITY, ball: this.balls[0], normal: vec4()};
     for(k = 0; k < this.balls.length; k++){
-      test_intersection = this.balls[k].intersect(l, test_intersection, 1);
+      test_intersection = this.balls[k].intersect(l, test_intersection);
     }
 
-    //there must be something blocking our way. the second part is unncessary but i just put it there cuz i can't fix a bug
+    //there must be something blocking our way.
     //u don't want anything in your way
     if(test_intersection.distance != Number.POSITIVE_INFINITY){
       continue;
@@ -362,8 +363,14 @@ Raytracer.prototype.trace = function( ray, color_remaining, shadow_test_light_so
 
     //thank you cornell. god bless
     var sIntensity = scale_vec(Math.pow(stemp,3),
-     vec3(current_light.color[0],current_light.color[1],current_light.color[2]))
-
+     vec3(current_light.color[0],current_light.color[1],current_light.color[2]));
+    // var sIntensity = vec3(0,0,0);
+    // var r = normalize(scale_vec(dtemp,scale_vec(2,n)));
+    // var rv = dot(r,scale(-1,ray.dir));
+    // var powrv = Math.pow(rv,closest_intersection.n);
+    // if(rv > .001){
+    //   sIntensity = scale_vec(powrv,vec3(current_light.color[0],current_light.color[1],current_light.color[2]))
+    // }
     specular = add(specular, sIntensity);
   }
 
